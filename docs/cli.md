@@ -3,6 +3,8 @@
 Use the CLI for a direct inspection or a script. It uses the same application
 workflows and evidence contracts as REA's MCP server. Each CLI invocation is a
 separate process; save results when you want to use them in a later command.
+For a pinned, noninteractive workflow with retained reports, see
+[static analysis in GitHub Actions](ci-analysis.md).
 
 ## Run a command
 
@@ -43,6 +45,119 @@ of about 10 KB. Replace the view with
 module page. See
 [JavaScript application workflows](javascript-application-workflows.md) for
 views, feature traces and comparisons that take the same saved Evidence.
+
+## JSON Lines record output
+
+Use `--format jsonl` to consume row-oriented results one record per line:
+
+```bash
+cat > observations-view.json <<'JSON'
+{"source":{"kind":"evidence-file","path":"app-evidence.json"},"view":{"kind":"javascript-facts","property_keys":[],"offset":0,"limit":32}}
+JSON
+rea inspect-analysis-view observations-view.json --format jsonl > observations.jsonl
+```
+
+This request selects up to 32 observation identities and their provenance,
+without observation property values.
+
+This changes JSONL object-collection framing. Scripts that need one complete
+report or a scalar field should use `--format json`. For a full application
+graph, first project a supported analysis view rather than selecting an
+arbitrary nested graph array.
+
+A top-level array emits its elements in source order. An object must have one
+clear `rows`, `items`, `records`, or `occurrences` array, directly or under
+`page`. Evidence uses the same boundaries inside `normalized_result`.
+An arbitrary report or a scalar selection is refused with an actionable error;
+use `--format json` for a complete document. If several collections exist,
+select one with `--filter-output`, for example `normalized_result.rows`.
+
+Object collections finish with a control record:
+
+```json
+{
+  "$rea": "jsonl/v1",
+  "type": "metadata",
+  "records": {
+    "path": ["normalized_result", "rows"],
+    "emitted": 2,
+    "source": 10,
+    "filter": "normalized_result.rows[0,2]"
+  },
+  "context": {
+    "evidence_id": "ev_…",
+    "normalized_result": {
+      "coverage": {
+        "status": "page",
+        "examined": 10,
+        "total": 100,
+        "next_offset": 10,
+        "exhausted": false
+      }
+    }
+  }
+}
+```
+
+This abbreviated example illustrates framing. The actual `context` preserves
+all non-row fields, including Evidence subject, provider, authority, confidence,
+locations, links, limitations, parent/view digests, pagination and coverage.
+With `--full-output`, it also retains the command envelope and its metadata.
+A data filter selects row fields/slices while this context remains available;
+excluded peer record collections and unselected Evidence `raw_result` are not
+restored. An explicitly selected `raw_result` remains selected. Retain the
+original Evidence for complete observations.
+
+`records.emitted` and `records.source` count the selected output and its source
+array; they do not assert analysis completeness. Source coverage and unknowns
+retain their original meaning. Existing row identities and indices remain
+unchanged unless your field selection excludes them. Empty object collections
+still emit metadata; an empty top-level array emits no lines. Bare top-level
+arrays have no synthetic coverage record.
+
+Command and output-validation failures emit `{"$rea":"jsonl/v1","type":"error","ok":false,"result":…}`
+and retain the original diagnostic payload. SDK validation/sentinel errors use
+the SDK's exit status rather than guessing from data fields. `$rea` is reserved
+at the top level of a data record, so control records are unambiguous; collisions
+are refused before rows are written. Nested `$rea` values are ordinary data.
+A missing final metadata record or nonzero exit can indicate an interrupted
+export; do not treat already emitted rows as a complete result.
+
+`--token-count` estimates this exact representation, including metadata, one
+line at a time. Errors remain error records even with token counting enabled.
+Token windows cannot preserve JSON Lines and are rejected. JSON encoding and
+stdout writes are incremental, including large escaped strings; this is output
+streaming over a completed result, not incremental analysis. The analysis still
+needs its normal resources. A single record must fit the runtime string limit
+for token estimation; remove `--token-count` to stream a larger record.
+
+Standalone version and MCP doctor diagnostics remain single JSON documents
+in JSON Lines mode. Incur's streaming generator events and successful sentinel
+responses retain their SDK protocol. MCP application results and Evidence
+contracts are unchanged.
+
+## Shell completion
+
+The CLI includes optional shell completion. Run `rea completions --help` to
+see the available shells and their setup commands. For Bash, load the hook
+into the current shell:
+
+```bash
+eval "$(rea completions bash)"
+```
+
+The current Bash hook requires support for `complete -o nosort`; macOS's
+system Bash 3.2 cannot load it. Use a newer Bash for this hook.
+
+For future interactive non-login Bash sessions, add the command to
+`~/.bashrc`. Interactive login Bash sessions read the first available file in
+`~/.bash_profile`, `~/.bash_login`, and `~/.profile`; add the command to the
+file your shell reads, or have that file source `~/.bashrc`. Remove the command
+from the startup file to stop loading completion, and run `complete -r rea` to
+remove the registration from the current shell. These are manual, opt-in
+steps.
+Completion is a discovery aid; use `rea COMMAND --help` to confirm the
+available options and subcommands.
 
 ## Managed assemblies (.NET)
 
@@ -155,6 +270,18 @@ dependency edges, and the section's file range. A missing `.dep-v0` section is
 null metadata, not proof that the binary has no dependencies. See
 [Rust binaries](rust-binaries.md).
 
+Inspect a PE Authenticode certificate table without executing the image or
+verifying signatures:
+
+```bash
+rea inspect-pe-certificates /absolute/path/to/application.exe --json
+```
+
+The workflow reports `WIN_CERTIFICATE` entries and, for PKCS#7 signedData,
+embedded X.509 serial, issuer, subject, and validity fields. A missing security
+directory is observed absence of that table. See
+[PE Authenticode certificate tables](pe-certificates.md).
+
 Inspect ELF PT_NOTE and SHT_NOTE tables without executing the image:
 
 ```bash
@@ -164,6 +291,27 @@ rea inspect-elf-notes /absolute/path/to/program --json
 The workflow reports note owners, types, descriptor hashes, and GNU build-id
 or ABI-tag fields when those descriptors match. A missing note table is
 observed absence of those declarations. See [ELF note tables](elf-notes.md).
+
+Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
+without executing bytecode or installing Python:
+
+```bash
+rea inspect-python-pyc /absolute/path/to/module.pyc --json
+```
+
+The workflow reports the pinned CPython version for the magic, PEP 552 hash or
+mtime/size fields, nested function names, and bytecode SHA-256. Bytecode is
+not decompiled. See [CPython pyc inspection](python-pyc.md).
+
+Inspect an Erlang BEAM file without executing bytecode:
+
+```bash
+rea inspect-erlang-beam /absolute/path/to/app.beam --json
+```
+
+The workflow reports IFF chunk names, atom tables, exports, imports, lambdas,
+and the Code chunk header. Missing optional tables stay null. See
+[Erlang BEAM files](erlang-beam.md).
 
 Configure [Hopper or Ghidra](installation.md#hopper), the
 [IDA adapter](ida-provider.md), or [Kuna](kuna-provider.md) before analyzing a
@@ -251,7 +399,11 @@ an exact result when the target bytes, operation, parameters, provider and
 settings match. Mutations and cursor-dependent calls are excluded from the
 cache. Snapshot files are local and use owner-only permissions.
 
-Dispatching a metadata write invalidates the active session's snapshot cache,
+Importing an Evidence bundle refreshes retained subject display names and paths.
+It preserves cached analysis results, including observations for other targets.
+Snapshot bindings that use a replaced record retain its updated display path.
+
+Dispatching a provider metadata write invalidates the active session's snapshot cache,
 even if its reply fails: the provider may already have applied the write.
 Close and reopen the target before importing or saving another snapshot.
 
@@ -365,11 +517,33 @@ Entries that change during an import retain an unavailable-entry diagnostic
 alongside readable siblings. If enumeration of an already admitted root fails,
 the graph keeps its observed children and records the root failure as a
 top-level limitation. That partial inventory does not establish absence among
-unexamined children.
+unexamined children. POSIX directory-entry bytes that are not valid UTF-8 cannot
+be represented as graph paths; the containing directory (or root) is marked
+unsupported, and REA does not access the entry through a replacement-character
+name. Symlink targets are read as bytes too: a target that is not valid UTF-8
+is retained as an unreadable symlink with its bytes reported in the limitation,
+and is never resolved through a replacement-character path. Readable siblings
+remain inventoried.
 
 JavaScript and TypeScript import parsing requires valid UTF-8. Malformed source
 bytes retain their original hashes and sizes with a decoding diagnostic; REA
-does not infer module targets from replacement characters.
+does not infer module targets from replacement characters. Exact dynamic-import
+strings, expression-free templates and runtime-transparent TypeScript wrappers
+retain their targets; computed imports remain unknown. TypeScript import-equals
+dependencies remain `requires` relationships whether or not they are exported.
+
+REA derives historical CommonJS paths only when the selected loader and its
+base are proven: this includes the exact
+`createRequire(new URL("./file.cjs", import.meta.url))` form and
+`require.resolve` with `{ paths: [__dirname] }`. Other custom bases and search
+options remain partial with unknown resolution and the literal requested
+specifier. Overwritten resolver methods retain that uncertainty; they are not
+attributed to Node. `require.main` is a module object, so calling it does not
+establish a loader reference. These relationships do not establish execution;
+Node's [`require.resolve`](https://nodejs.org/docs/v24.22.1/api/modules.html#requireresolverequest-options)
+performs lookup without loading the target. An excluded `package.json`
+also leaves package-directory selection unknown rather than treating the
+manifest as absent and applying an `index` fallback.
 
 Historical-source import requires safe no-follow file opens on Linux or
 macOS. Native Windows returns `unsupported_host`; use Linux REA inside WSL
@@ -481,6 +655,68 @@ of the serve command's stopped document. See
 [agent environments](agent-environments.md#export-a-bundle) for the folder
 layout and what the smoke task checks.
 
+## Compare an environment with its application
+
+`rea environment-compare <manifest.json> --evidence <capture.json> --probe <probe.json> [--probe <probe.json> ...]`
+compares the environment the pair serves with probe captures of the application it came from. Each probe is capture
+Evidence of one call sequence recorded against the application after a reset; the environment's state is reset before
+each probe, every request to the application's origin is answered as the served environment answers it, and the
+answer is compared with the application's after ids are mapped and clocks and generated values are normalised. The command reads files only and
+makes no network call. It prints the report and exits `0`, or prints a structured `invalid_request` error and exits `1`
+for the same pair refusals as `environment-serve`, a probe that is not capture Evidence, or a browser probe captured
+without response bodies, or without the request bodies its writes need. See
+[agent environments](agent-environments.md#measure-fidelity-against-the-application) for the report.
+
+```sh
+rea environment-compare manifest.json --evidence capture.json --probe probe.json --json
+```
+
+## Report version and runtime
+
+`rea --version` prints the package version. Add an output format to get the
+version with the runtime and platform context that a support request needs:
+
+Version reports do not initialize analysis providers. Invalid global settings
+or output options still report their usual errors.
+
+```bash
+rea --version --json
+```
+
+```json
+{
+  "name": "rea-agents",
+  "version": "6.7.0",
+  "runtime": { "id": "node", "version": "24.22.1" },
+  "platform": "linux",
+  "architecture": "x64",
+  "supported_runtime": {
+    "range": "^22.23.4 || ^24.22.1 || >=26.12.1",
+    "satisfied": true
+  }
+}
+```
+
+| Field                                | Meaning                                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `name`, `version`                    | Published package name and version; `version` matches plain `--version`.                                       |
+| `runtime.id`                         | `node` or `bun`.                                                                                               |
+| `runtime.version`                    | Version of that runtime.                                                                                       |
+| `runtime.node_compatibility_version` | Bun only: the Node.js version it reports compatibility with.                                                   |
+| `platform`, `architecture`           | Node.js `process.platform` and `process.arch`, such as `linux` and `x64`.                                      |
+| `supported_runtime.range`            | Supported Node.js range.                                                                                       |
+| `supported_runtime.satisfied`        | Whether this runtime is supported, judged as `rea doctor` judges it; Bun by its Node.js compatibility version. |
+
+The field names are stable. The report contains no paths, environment values,
+user or host names, and it starts no provider and reads no target. `--format`
+selects any CLI output format, such as `--format yaml`. JSON follows the usual
+rule: indented on a terminal, compact when piped or redirected. `--help` still
+takes precedence. With other output controls, `--version` keeps its existing
+behavior: valid controls such as `--filter-output` or `--full-output` print the
+plain version, and invalid combinations report the usual output-flag error,
+such as `UNSUPPORTED_OUTPUT_COMBINATION` for `--json` with `--token-limit`. Use
+`rea doctor` for provider and host readiness.
+
 ## Output and exit status
 
 `rea mcp doctor --json` checks production MCP startup and reports child logs in
@@ -499,10 +735,24 @@ redirected, which keeps large results smaller for agents and scripts; pipe
 through `jq .` for indented files. Output selection and formatting do not change
 operation status.
 
+`--format md` escapes backslashes and pipes in table headers and cells, and
+renders cell line breaks as `<br>`. These are presentation changes; retained
+Evidence and JSON output keep the original values. Table widths are measured
+iteratively, so an admitted row page is not limited by the JavaScript function
+argument count.
+
 `--filter-output` selects fields from successful command data. Classified failures
 retain their complete typed diagnostic projection even when the selector matches
 a field such as `code` or `message`, or names a missing field. `--full-output`
 controls whether the outer `{ok, error, meta}` envelope is included.
+Selected own JSON members, including `__proto__`, remain ordinary output data.
+
+Sibling array slices that select different fields are combined by original row
+index and emitted in source order, regardless of selector order. Selecting a
+whole parent row keeps that row intact and takes precedence over narrower fields
+selected from the same row. For example, `rows[0,2].name,rows[1,3].version`
+combines both fields for overlapping rows, while `rows[0,2],rows[1,3].version`
+retains rows 0 and 1 whole.
 
 For `cutter-command`, `--json-output` requests command-specific JSON from
 Cutter when available. This is separate from `--format json`, which selects the

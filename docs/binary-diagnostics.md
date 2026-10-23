@@ -299,3 +299,73 @@ arm64 host and Node version. Cold disk I/O, token counts and an agent
 investigation were not measured; there was no previous equivalent tool to
 benchmark. These figures do not establish a portable peak-memory bound,
 constant memory for retained Evidence or faster agent task completion.
+
+## Portable native exports
+
+`inspect_native_exports` / `inspect-native-exports` reads the export table of an
+explicit PE or ELF image on any supported host, without an active target,
+native engine, `objdump` or Windows SDK:
+
+```sh
+rea inspect-native-exports ./runtimes/linux-x64/native/libexample.so --json
+```
+
+```json
+{
+  "name": "inspect_native_exports",
+  "arguments": { "path": "/artifacts/native/example.dll" }
+}
+```
+
+The complete Evidence identifies the stable artifact snapshot by path, byte
+count and SHA-256.
+
+- PE rows reproduce the export directory: each used export-address-table slot
+  with its biased `ordinal` (`OrdinalBase` plus the slot index), one row per
+  name (aliases share an ordinal), `address`
+  as the preferred-base virtual address, or `forwarder` text when the slot
+  forwards to another DLL. Unused zero-address slots are omitted;
+  ordinal-only exports have a null `name`. The name-ordinal table stores an
+  unbiased 16-bit EAT index; reported biased ordinals may exceed 16 bits. The
+  directory's DLL name, ordinal base and timestamp are reported, and an image
+  without an export directory is a complete empty inventory.
+- ELF rows list defined `.dynsym` symbols with global, weak or GNU-unique
+  binding and default or protected visibility. Each row keeps `value`
+  (`st_value` as stored; bit 0 marks Thumb code on 32-bit ARM), `size`, `type`
+  and `binding`. ELF string tables do not declare a text encoding. Names that
+  contain non-ASCII bytes are decoded as UTF-8 when those bytes form valid
+  UTF-8; `name_utf8_decodable` records whether the non-ASCII name bytes are
+  valid UTF-8 and `name_bytes_base64` retains those exact bytes (`null` for
+  ASCII names). When they are not valid UTF-8, `name` uses a byte-preserving
+  Latin-1 mapping and the raw bytes remain available. Older retained results
+  report null for the newly added encoding fields. `version` is null for an
+  unversioned symbol. A versioned
+  symbol reports its GNU index, a name resolved from `.gnu.version_d` or
+  `.gnu.version_r`, the corresponding `name_bytes_base64` and
+  `name_utf8_decodable` facts, and the `hidden` flag from `.gnu.version`.
+  Version names use the same UTF-8-when-valid, otherwise byte-preserving
+  Latin-1 display mapping as symbol names; ELF does not declare either
+  string's text encoding. Older retained results report null for the added
+  version-name encoding fields. `"unknown"`
+  means the symbol-version table could not be read. A hidden version is not
+  the default version that a by-name `dlsym` lookup selects.
+  Definition names take precedence when both tables name the same index.
+
+Unreadable names, out-of-range name ordinals and unreadable forwarders are
+listed in `issues`, their entries are not reported, and coverage is `partial`.
+PE export names are bounded null-terminated byte strings and may continue
+across adjacent file-backed section mappings when the virtual bytes are
+unambiguous. Gaps, zero-fill and conflicting mappings remain unreadable names.
+Unresolved symbol versions keep their rows: the version name is null when no
+definition or requirement names the index, and `version` is
+`"unknown"` when the version table cannot be read; coverage is likewise
+`partial`. A dynamic symbol table without its null entry is malformed. An ELF
+without section headers is `unsupported`:
+enumerating dynamic symbols from the dynamic segment is not
+implemented. Mach-O exports are reported by `inspect_macho`.
+
+`max_file_bytes` defaults to 256 MiB (maximum 512 MiB; CLI `--max-file-bytes`).
+Export directories in PE headers are read like those in sections. An export or
+dynamic symbol table above 262144 entries, more than 262144 rows, or more than
+16 MiB of retained names fails without partial success. Export rows do not establish that a symbol is reachable, safe to call
+or loaded at runtime.

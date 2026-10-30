@@ -4,7 +4,8 @@ import { parseEvidence } from "../../../src/domain/evidence.js";
 import { ok as resultOk } from "../../../src/domain/result.js";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it } from "vitest";
+import { createMcpSchemaValidation } from "../../fixtures/mcpSchemaValidation.js";
 
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { CdpBrowserProvider } from "../../../src/browser/CdpBrowserProvider.js";
@@ -18,11 +19,14 @@ import {
 import { expandToolAvailability } from "../../../src/contracts/toolOutputSchemaPrimitives.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { observed } from "../../fixtures/analysisExecution.js";
-import { runCliJson } from "../../fixtures/cliJsonProcess.js";
+import { cliTest } from "../../support/cli/cliFixture.js";
 import {
   startFakeCdpBrowser,
   type FakeCdpBrowser,
 } from "../../fixtures/fakeCdpBrowser.js";
+
+const schemaValidation = createMcpSchemaValidation();
+afterAll(() => schemaValidation.clear());
 
 const resources: Array<{ close(): Promise<unknown> }> = [];
 const browsers: FakeCdpBrowser[] = [];
@@ -175,9 +179,9 @@ it("preserves Link parameter order and context through the advertised MCP contra
   ).toBe(true);
 });
 
-it(
+cliTest(
   "preserves full document URL identity through CLI and MCP",
-  async () => {
+  async ({ cli }) => {
     const source =
       'document.modelContext.registerTool({name:"catalog",[``]:0,inputSchema:{properties:{"":{},ordinary:{}}}});';
     const browser = await startFakeCdpBrowser({
@@ -219,21 +223,26 @@ it(
       allowed_origins: [browser.allowedOrigin],
       target_id: "allowed-page",
     };
-    const cli = await runCliJson([
-      "analyze-web-bundle",
-      browser.endpoint,
-      "allowed-page",
-      "--allowed-origins",
-      browser.allowedOrigin,
-      "--observation-ms",
-      "0",
-      "--json",
-    ]);
+    const cliResult = await cli.run({
+      arguments: [
+        "analyze-web-bundle",
+        browser.endpoint,
+        "allowed-page",
+        "--allowed-origins",
+        browser.allowedOrigin,
+        "--observation-ms",
+        "0",
+        "--json",
+      ],
+      environment: process.env,
+    });
+    expect(cliResult.exitCode).toBe(0);
+    expect(cliResult.signal).toBeNull();
     const mcp = await client.callTool({
       name: "analyze_web_bundle",
       arguments: { ...args, observation_ms: 0 },
     });
-    for (const result of [cli, mcp.structuredContent])
+    for (const result of [cliResult.json, mcp.structuredContent])
       expect(result).toMatchObject({
         normalized_result: {
           capture: {
@@ -589,100 +598,109 @@ const assertScreenshotPngFailures = async (client: Client): Promise<void> => {
   });
 };
 
-it("delivers the source-map response URL through authenticated MCP Evidence", async () => {
-  const terminalPath = "/maps/v1/app.js.map?revision=2&token=source-value";
-  const sources = [
-    ["../src/original.js", "text/javascript"],
-    ["../src/plain.ts", "text/typescript"],
-    ["../src/main.ts?revision=2", "text/typescript"],
-    ["../src/main.tsx?revision=2", "text/typescript"],
-    ["../src/main.mts?revision=2", "text/typescript"],
-    ["../src/main.cts?revision=2", "text/typescript"],
-    ["../src/fragment.ts#original", "text/typescript"],
-    ["../src/control.js?filename=main.ts", "text/javascript"],
-    ["../src/extensionless?revision=2", "text/javascript"],
-  ] as const;
-  const sourceText = "export const value = 1;";
-  const browser = await startFakeCdpBrowser({
-    sourceMapRedirect: terminalPath,
-    sourceMapBody: JSON.stringify({
-      version: 3,
-      names: [],
-      sources: sources.map(([source]) => source),
-      sourcesContent: sources.map(() => sourceText),
-      mappings: "AAAA",
-    }),
-  });
-  browsers.push(browser);
-  const connected = await connectBrowser();
-  const result = await connected.client.callTool({
-    name: "analyze_web_bundle",
-    arguments: {
-      cdp_endpoint: browser.endpoint,
-      target_id: "allowed-page",
-      allowed_origins: [browser.allowedOrigin],
-      observation_ms: 0,
-      fetch_source_maps: true,
-    },
-  });
-  expect(result.isError).not.toBe(true);
-  const evidence = parseEvidence(result.structuredContent);
-  const expectedResult = {
-    observations: {
-      source_maps: {
-        status: "included",
-        items: [
-          {
-            declared_url: `${browser.allowedOrigin}/app.js.map?token=map-secret`,
-            effective_url: `${browser.allowedOrigin}${terminalPath}`,
-            original_sources: sources.map(([source, mediaType]) => ({
-              source: new URL(source, `${browser.allowedOrigin}${terminalPath}`)
-                .href,
-              artifact: { media_type: mediaType, text: sourceText },
-            })),
-          },
-        ],
+cliTest(
+  "delivers the source-map response URL through authenticated MCP Evidence",
+  async ({ cli }) => {
+    const terminalPath = "/maps/v1/app.js.map?revision=2&token=source-value";
+    const sources = [
+      ["../src/original.js", "text/javascript"],
+      ["../src/plain.ts", "text/typescript"],
+      ["../src/main.ts?revision=2", "text/typescript"],
+      ["../src/main.tsx?revision=2", "text/typescript"],
+      ["../src/main.mts?revision=2", "text/typescript"],
+      ["../src/main.cts?revision=2", "text/typescript"],
+      ["../src/fragment.ts#original", "text/typescript"],
+      ["../src/control.js?filename=main.ts", "text/javascript"],
+      ["../src/extensionless?revision=2", "text/javascript"],
+    ] as const;
+    const sourceText = "export const value = 1;";
+    const browser = await startFakeCdpBrowser({
+      sourceMapRedirect: terminalPath,
+      sourceMapBody: JSON.stringify({
+        version: 3,
+        names: [],
+        sources: sources.map(([source]) => source),
+        sourcesContent: sources.map(() => sourceText),
+        mappings: "AAAA",
+      }),
+    });
+    browsers.push(browser);
+    const connected = await connectBrowser();
+    const result = await connected.client.callTool({
+      name: "analyze_web_bundle",
+      arguments: {
+        cdp_endpoint: browser.endpoint,
+        target_id: "allowed-page",
+        allowed_origins: [browser.allowedOrigin],
+        observation_ms: 0,
+        fetch_source_maps: true,
       },
-    },
-  };
-  expect(evidence.normalized_result).toMatchObject(expectedResult);
-  expect(result.content).toHaveLength(1);
-  expect(result.content[0]).toMatchObject({
-    type: "text",
-    text: JSON.stringify(evidence),
-  });
-  const cliEvidence = parseEvidence(
-    await runCliJson([
-      "analyze-web-bundle",
-      browser.endpoint,
-      "allowed-page",
-      "--allowed-origins",
-      browser.allowedOrigin,
-      "--observation-ms",
-      "0",
-      "--fetch-source-maps",
-      "--json",
-    ]),
-  );
-  expect(cliEvidence.normalized_result).toMatchObject(expectedResult);
-  const mapRequests = browser.httpRequests.filter(({ url }) =>
-    url.includes(".map"),
-  );
-  expect(mapRequests.map(({ url }) => url)).toEqual([
-    "/app.js.map?token=map-secret",
-    terminalPath,
-    "/app.js.map?token=map-secret",
-    terminalPath,
-  ]);
-  expect(
-    mapRequests.every(
-      ({ authorization, cookie, referer }) =>
-        authorization === undefined &&
-        cookie === undefined &&
-        referer === undefined,
-    ),
-  ).toBe(true);
-});
+    });
+    expect(result.isError).not.toBe(true);
+    const evidence = parseEvidence(result.structuredContent);
+    const expectedResult = {
+      observations: {
+        source_maps: {
+          status: "included",
+          items: [
+            {
+              declared_url: `${browser.allowedOrigin}/app.js.map?token=map-secret`,
+              effective_url: `${browser.allowedOrigin}${terminalPath}`,
+              original_sources: sources.map(([source, mediaType]) => ({
+                source: new URL(
+                  source,
+                  `${browser.allowedOrigin}${terminalPath}`,
+                ).href,
+                artifact: { media_type: mediaType, text: sourceText },
+              })),
+            },
+          ],
+        },
+      },
+    };
+    expect(evidence.normalized_result).toMatchObject(expectedResult);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({
+      type: "text",
+      text: JSON.stringify(evidence),
+    });
+    const cliResult = await cli.run({
+      arguments: [
+        "analyze-web-bundle",
+        browser.endpoint,
+        "allowed-page",
+        "--allowed-origins",
+        browser.allowedOrigin,
+        "--observation-ms",
+        "0",
+        "--fetch-source-maps",
+        "--json",
+      ],
+      environment: process.env,
+    });
+    expect(cliResult.exitCode).toBe(0);
+    expect(cliResult.signal).toBeNull();
+    const cliEvidence = parseEvidence(cliResult.json);
+    expect(cliEvidence.normalized_result).toMatchObject(expectedResult);
+    const mapRequests = browser.httpRequests.filter(({ url }) =>
+      url.includes(".map"),
+    );
+    expect(mapRequests.map(({ url }) => url)).toEqual([
+      "/app.js.map?token=map-secret",
+      terminalPath,
+      "/app.js.map?token=map-secret",
+      terminalPath,
+    ]);
+    expect(
+      mapRequests.every(
+        ({ authorization, cookie, referer }) =>
+          authorization === undefined &&
+          cookie === undefined &&
+          referer === undefined,
+      ),
+    ).toBe(true);
+  },
+);
 
 it.each(["full", "compact"] as const)(
   "records a browser-socket endpoint redacted and reconciles its Evidence (%s)",
@@ -729,6 +747,40 @@ it.each(["full", "compact"] as const)(
     expect(reconciled.structuredContent).toMatchObject({
       normalized_result: { summary: { runtime_scripts: 1 } },
     });
+  },
+);
+
+it.each([
+  ["inspect_web_page", 0],
+  ["analyze_web_bundle", 0],
+  ["observe_web_session", 1],
+  ["discover_webmcp_tools", 0],
+  ["capture_web_screenshot", undefined],
+] as const)(
+  "selects the exact opaque target ID through %s",
+  async (name, observationMs) => {
+    const browser = await startFakeCdpBrowser();
+    browsers.push(browser);
+    const { client } = await connectBrowser();
+    const args = {
+      cdp_endpoint: browser.endpoint,
+      allowed_origins: [browser.allowedOrigin],
+      ...(observationMs === undefined ? {} : { observation_ms: observationMs }),
+    };
+    const rejected = await client.callTool({
+      name,
+      arguments: { ...args, target_id: " allowed-page " },
+    });
+    expect(parseMcpToolError(rejected)).toMatchObject({
+      error: { details: { reason: "target_not_found" } },
+    });
+    expect(browser.commands).toHaveLength(0);
+    const accepted = await client.callTool({
+      name,
+      arguments: { ...args, target_id: "allowed-page" },
+    });
+    expect(accepted.isError).not.toBe(true);
+    expect(browser.commands.length).toBeGreaterThan(0);
   },
 );
 
@@ -810,7 +862,10 @@ const connectBrowser = async (profile?: "full" | "compact") => {
       }),
     },
   );
-  const client = new Client({ name: "browser-mcp-test", version: "1" });
+  const client = new Client(
+    { name: "browser-mcp-test", version: "1" },
+    { jsonSchemaValidator: schemaValidation },
+  );
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   resources.push(client, server, session);
